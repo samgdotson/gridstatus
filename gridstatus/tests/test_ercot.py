@@ -83,6 +83,8 @@ class TestErcot(BaseTestISO):
             df = self.iso.get_sced_system_lambda(i, verbose=True)
             assert df.shape[0] >= 0
             assert df.columns.tolist() == [
+                "Interval Start",
+                "Interval End",
                 "SCED Timestamp",
                 "System Lambda",
             ]
@@ -299,6 +301,77 @@ class TestErcot(BaseTestISO):
     @pytest.mark.skip(reason="Not Applicable")
     def test_get_load_forecast_historical_with_date_range(self):
         pass
+
+    """get_capacity_committed"""
+
+    def test_get_capacity_committed(self):
+        df = self.iso.get_capacity_committed("latest")
+
+        assert df.columns.tolist() == ["Interval Start", "Interval End", "Capacity"]
+
+        assert df["Interval Start"].min() == self.local_start_of_today()
+        # The end time is approximately now
+        assert (
+            self.local_now() - pd.Timedelta(minutes=5)
+            < df["Interval End"].max()
+            < self.local_now() + pd.Timedelta(minutes=5)
+        )
+
+        assert (df["Interval End"] - df["Interval Start"]).unique() == pd.Timedelta(
+            minutes=5,
+        )
+
+    """get_capacity_forecast"""
+
+    def test_get_capacity_forecast(self):
+        df = self.iso.get_capacity_forecast("latest")
+
+        assert df.columns.tolist() == [
+            "Interval Start",
+            "Interval End",
+            "Publish Time",
+            "Committed Capacity",
+            "Available Capacity",
+        ]
+
+        # The start time is approximately now
+        assert (
+            self.local_now() - pd.Timedelta(minutes=5)
+            < df["Interval Start"].min()
+            < self.local_now() + pd.Timedelta(minutes=5)
+        )
+
+        assert df["Interval End"].max() >= self.local_start_of_day(
+            self.local_today() + pd.Timedelta(days=1),
+        )
+
+        assert (df["Interval End"] - df["Interval Start"]).unique() == pd.Timedelta(
+            minutes=5,
+        )
+
+    """get_available_seasonal_capacity_forecast"""
+
+    def test_get_available_seasonal_capacity_forecast(self):
+        df = self.iso.get_available_seasonal_capacity_forecast("latest")
+
+        assert df.columns.tolist() == [
+            "Interval Start",
+            "Interval End",
+            "Publish Time",
+            "Available Capacity",
+            "Load Forecast",
+        ]
+
+        assert df["Interval Start"].min() == self.local_start_of_today() + pd.Timedelta(
+            days=1,
+        )
+        assert df["Interval End"].max() == self.local_start_of_today() + pd.Timedelta(
+            days=7,
+        )
+
+        assert (df["Interval End"] - df["Interval Start"]).unique() == pd.Timedelta(
+            hours=1,
+        )
 
     """get_spp"""
 
@@ -747,6 +820,48 @@ class TestErcot(BaseTestISO):
 
         assert df.columns.tolist() == cols
 
+    """get_reported_outages"""
+
+    def test_get_reported_outages(self):
+        df = self.iso.get_reported_outages()
+
+        assert df.columns.tolist() == [
+            "Time",
+            "Combined Unplanned",
+            "Combined Planned",
+            "Combined Total",
+            "Dispatchable Unplanned",
+            "Dispatchable Planned",
+            "Dispatchable Total",
+            "Renewable Unplanned",
+            "Renewable Planned",
+            "Renewable Total",
+        ]
+
+        assert df["Time"].min() <= self.local_start_of_today() - pd.Timedelta(
+            # Add the minutes because the times do not line up exactly on the hour
+            days=6,
+            minutes=-5,
+        )
+
+        assert df["Time"].max() >= self.local_start_of_today()
+
+        assert (
+            df["Combined Total"] == (df["Combined Unplanned"] + df["Combined Planned"])
+        ).all()
+
+        assert (
+            df["Dispatchable Total"]
+            == (df["Dispatchable Unplanned"] + df["Dispatchable Planned"])
+        ).all()
+
+        assert (
+            df["Renewable Total"]
+            == (df["Renewable Unplanned"] + df["Renewable Planned"])
+        ).all()
+
+    """get_hourly_resource_outage_capacity"""
+
     def test_get_hourly_resource_outage_capacity(self):
         cols = [
             "Publish Time",
@@ -1068,6 +1183,8 @@ class TestErcot(BaseTestISO):
 
     def test_get_lmp_electrical_bus(self):
         cols = [
+            "Interval Start",
+            "Interval End",
             "SCED Timestamp",
             "Market",
             "Location",
@@ -1109,6 +1226,8 @@ class TestErcot(BaseTestISO):
         )
 
         cols = [
+            "Interval Start",
+            "Interval End",
             "SCED Timestamp",
             "Market",
             "Location",
@@ -1118,6 +1237,11 @@ class TestErcot(BaseTestISO):
 
         assert df.shape[0] >= 0
         assert df.columns.tolist() == cols
+
+        assert (df["Interval Start"] == df["SCED Timestamp"].dt.floor("5min")).all()
+        assert (
+            df["Interval End"] - df["Interval Start"] == pd.Timedelta(minutes=5)
+        ).all()
 
     def test_read_docs_return_empty_df(self):
         df = self.iso.read_docs(docs=[], empty_df=pd.DataFrame(columns=["test"]))

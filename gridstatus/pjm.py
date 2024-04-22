@@ -1,4 +1,5 @@
 import math
+import os
 import warnings
 from typing import BinaryIO
 
@@ -412,15 +413,25 @@ class PJM(ISOBase):
         "93353965",
     ]
 
-    def __init__(self, retries=DEFAULT_RETRIES):
-        self.retries = retries
-        super().__init__()
-
     markets = [
         Markets.REAL_TIME_5_MIN,
         Markets.REAL_TIME_HOURLY,
         Markets.DAY_AHEAD_HOURLY,
     ]
+
+    def __init__(self, api_key=None, retries=DEFAULT_RETRIES) -> None:
+        """
+        Arguments:
+            api_key (str, optional): PJM API key. Alternatively, can be set
+                in PJM_API_KEY environment variable. Register for an API key
+                at https://www.pjm.com/
+        """
+        super().__init__()
+        self.retries = retries
+        self.api_key = api_key or os.getenv("PJM_API_KEY")
+
+        if not self.api_key:
+            raise ValueError("api_key must be provided or set in PJM_API_KEY env var")
 
     @support_date_range(frequency="365D")
     def get_fuel_mix(self, date, end=None, verbose=False):
@@ -746,6 +757,9 @@ class PJM(ISOBase):
                 ),
             )
 
+        # returns on the latest version of the data
+        params["row_is_current"] = "TRUE"
+
         try:
             data = self._get_pjm_json(
                 market_endpoint,
@@ -764,6 +778,8 @@ class PJM(ISOBase):
                 params[
                     "fields"
                 ] = "congestion_price_rt,datetime_beginning_ept,datetime_beginning_utc,marginal_loss_price_rt,occ_check,pnode_id,pnode_name,ref_caseid_used_multi_interval,total_lmp_rt,type"  # noqa: E501
+                # remove this field because it's not supported in this endpoint
+                del params["row_is_current"]
 
             data = self._get_pjm_json(
                 market_endpoint,
@@ -862,8 +878,9 @@ class PJM(ISOBase):
         params,
         end=None,
         start_row=1,
-        row_count=100000,
+        row_count=50000,
         interval_duration_min=None,
+        filter_timestamp_name="datetime_beginning",
         verbose=False,
     ):
         default_params = {
@@ -883,21 +900,24 @@ class PJM(ISOBase):
             else:
                 end = start + pd.DateOffset(days=1)
 
-            final_params["datetime_beginning_ept"] = (
+            final_params[f"{filter_timestamp_name}_ept"] = (
                 start.strftime("%m/%d/%Y %H:%M") + "to" + end.strftime("%m/%d/%Y %H:%M")
             )
 
-        msg = f"Retrieving data from {endpoint} with params {final_params}"
-        log(msg, verbose)
+        # Exclude API key from logs
+        params_to_log = final_params.copy()
+        if "Ocp-Apim-Subscription-Key" in params_to_log:
+            params_to_log["Ocp-Apim-Subscription-Key"] = "API_KEY_HIDDEN"
 
-        api_key = self._get_key()
+        msg = f"Retrieving data from {endpoint} with params {params_to_log}"
+        log(msg, verbose)
 
         r = self._get_json(
             "https://api.pjm.com/api/v1/" + endpoint,
             verbose=verbose,
             retries=self.retries,
             params=final_params,
-            headers={"Ocp-Apim-Subscription-Key": api_key},
+            headers={"Ocp-Apim-Subscription-Key": self.api_key},
         )
 
         if "errors" in r:
@@ -919,7 +939,7 @@ class PJM(ISOBase):
                     verbose=verbose,
                     retries=self.retries,
                     headers={
-                        "Ocp-Apim-Subscription-Key": api_key,
+                        "Ocp-Apim-Subscription-Key": self.api_key,
                     },
                 )
                 to_add.append(pd.DataFrame(r["items"]))
@@ -1039,36 +1059,104 @@ class PJM(ISOBase):
 
         return queue
 
-    def _get_key(self):
-        # Not using retries here, should we be?
-        settings = self._get_json(
-            "https://dataminer2.pjm.com/config/settings.json",
-            verbose=False,
+    @support_date_range(frequency=None)
+    def get_solar_forecast(self, date, end=None, verbose=False):
+        """
+        Retrieves the hourly solar forecast including behind the meter solar forecast.
+        From:  https://dataminer2.pjm.com/feed/hourly_solar_power_forecast/definition
+        Only available in past 30 days
+        """
+        if date == "latest":
+            date = "today"
+
+        df = self._get_pjm_json(
+            "hourly_solar_power_forecast",
+            start=date,
+            params={
+                "fields": "datetime_beginning_ept,datetime_beginning_utc,"
+                "datetime_ending_ept,datetime_ending_utc,evaluated_at_ept,"
+                "evaluated_at_utc,solar_forecast_btm_mwh,solar_forecast_mwh",
+            },
+            end=end,
+            filter_timestamp_name="evaluated_at",
+            interval_duration_min=60,
+            verbose=verbose,
         )
 
-        return settings["subscriptionKey"]
+        return self._parse_solar_forecast(df)
 
-
-"""
-import gridstatus
-iso = gridstatus.PJM()
-nodes = iso.get_pnode_ids()
-zones = nodes[nodes["pnode_subtype"] == "ZONE"]
-zone_ids = zones["pnode_id"].tolist()
-iso.get_historical_lmp("Oct 1, 2022", "DAY_AHEAD_HOURLY", locations=zone_ids)
-pnode_id
-"""
-
-
-if __name__ == "__main__":
-    import gridstatus
-
-    for i in gridstatus.all_isos:
-        print("\n" + i.name + "\n")
-        for c in i().get_interconnection_queue().columns:
-            print(c.replace("\n", " "))
-
-        i().get_interconnection_queue().to_csv(
-            f"debug/queue/{i.iso_id}-queue.csv",
-            index=None,
+    def _parse_solar_forecast(self, df):
+        df = df.rename(
+            columns={
+                "evaluated_at_utc": "Publish Time",
+                "solar_forecast_btm_mwh": "Solar Forecast BTM",
+                "solar_forecast_mwh": "Solar Forecast",
+            },
         )
+
+        df["Publish Time"] = pd.to_datetime(
+            df["Publish Time"],
+            utc=True,
+        ).dt.tz_convert(self.default_timezone)
+
+        df = df[
+            [
+                "Interval Start",
+                "Interval End",
+                "Publish Time",
+                "Solar Forecast BTM",
+                "Solar Forecast",
+            ]
+        ]
+
+        return df.sort_values("Interval Start").reset_index(drop=True)
+
+    @support_date_range(frequency=None)
+    def get_wind_forecast(self, date, end=None, verbose=False):
+        """
+        Retrieves the hourly wind forecast
+        From: vhttps://dataminer2.pjm.com/feed/hourly_wind_power_forecast/definition
+        Only available in past 30 days
+        """
+        if date == "latest":
+            date = "today"
+
+        df = self._get_pjm_json(
+            "hourly_wind_power_forecast",
+            start=date,
+            params={
+                "fields": "datetime_beginning_ept,datetime_beginning_utc,"
+                "datetime_ending_ept,datetime_ending_utc,evaluated_at_ept,"
+                "evaluated_at_utc,wind_forecast_mwh",
+            },
+            end=end,
+            filter_timestamp_name="evaluated_at",
+            interval_duration_min=60,
+            verbose=verbose,
+        )
+
+        return self._parse_wind_forecast(df)
+
+    def _parse_wind_forecast(self, df):
+        df = df.rename(
+            columns={
+                "evaluated_at_utc": "Publish Time",
+                "wind_forecast_mwh": "Wind Forecast",
+            },
+        )
+
+        df["Publish Time"] = pd.to_datetime(
+            df["Publish Time"],
+            utc=True,
+        ).dt.tz_convert(self.default_timezone)
+
+        df = df[
+            [
+                "Interval Start",
+                "Interval End",
+                "Publish Time",
+                "Wind Forecast",
+            ]
+        ]
+
+        return df.sort_values("Interval Start").reset_index(drop=True)

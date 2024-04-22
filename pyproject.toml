@@ -36,13 +36,14 @@ tabula-py = "^2.5.1"
 lxml = "^4.9.1"
 plotly = "^5.11.0"
 termcolor = "^2.2.0"
+xlrd = "^2.0.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.1.2"
 pytest-xdist = "^3.0.2"
 pytest-rerunfailures = "^10.3"
 pytest-cov = "^4.0.0"
-ruff = "^0.0.202"
+ruff = "^0.3.4"
 black = { version = "^22.12.0", extras = ["jupyter"] }
 pre-commit = "^2.21.0"
 ipython = "^8.4.0"
@@ -70,9 +71,6 @@ build-backend = "poetry.core.masonry.api"
 testpaths = ["gridstatus/tests/*"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    # TODO: figure out how to run tests in PRs that require
-    # ERCOT authentication
-    "requires_ercot_auth: requires ERCOT authentication via environment variables (deselect with '-m \"not requires_ercot_auth\"')",
 ]
 
 [tool.black]
@@ -81,14 +79,17 @@ target-version = ['py311']
 
 [tool.ruff]
 line-length = 88
-ignore = []
-select = ["F", "E", "W", "Q", "I001"]
 src = ["gridstatus"]
 
-[tool.ruff.isort]
+[tool.ruff.lint]
+ignore = []
+select = ["F", "E", "W", "Q", "I001"]
+
+
+[tool.ruff.lint.isort]
 known-first-party = ["gridstatus"]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "E402", "F403", "F405", "E501", "I001"]
 
 [tool.coverage.run]
