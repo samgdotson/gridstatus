@@ -69,6 +69,7 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+gridenv
 
 # Flask stuff:
 instance/
@@ -86,6 +87,8 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+.jupyter_cache
+docs/jupyter_execute/*
 
 # IPython
 profile_default/
